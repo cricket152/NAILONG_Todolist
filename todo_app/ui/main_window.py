@@ -1,0 +1,352 @@
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTableView, QHeaderView, QMenuBar, QMenu, QToolBar,
+    QStatusBar, QLabel, QLineEdit, QComboBox, QPushButton,
+    QMessageBox
+)
+from PyQt6.QtCore import Qt, QByteArray, QPoint
+from PyQt6.QtGui import QAction, QIcon
+
+from ..models import FilterParams
+from ..database import DatabaseManager
+from ..utils import resource_path
+import os
+from .task_table_model import TaskTableModel
+from .task_dialog import TaskDialog
+from .settings_dialog import SettingsDialog
+from .tray_manager import TrayManager
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, db: DatabaseManager):
+        super().__init__()
+        self._db = db
+        self._tray: TrayManager | None = None
+
+        self.setWindowTitle("Todo-List")
+        self.resize(860, 560)
+        self.setMinimumSize(640, 380)
+
+        icon_path = self._get_icon_path()
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
+
+        self._init_model()
+        self._init_ui()
+        self._init_menu_bar()
+        self._init_tool_bar()
+        self._init_status_bar()
+        self._init_tray()
+        self._connect_signals()
+        self._load_settings()
+        self._refresh_view()
+
+    def _init_model(self):
+        self._model = TaskTableModel(self._db, self)
+        self._current_filter = FilterParams()
+
+    def _get_icon_path(self):
+        p = resource_path("resources/app_icon.png")
+        return p if os.path.exists(p) else None
+
+    def _init_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        # --- Filter bar ---
+        filter_widget = QWidget()
+        filter_layout = QHBoxLayout(filter_widget)
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout.setSpacing(10)
+
+        filter_layout.addWidget(QLabel("搜索:"))
+
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText("搜索任务...")
+        self._search_box.setClearButtonEnabled(True)
+        filter_layout.addWidget(self._search_box)
+
+        filter_layout.addWidget(QLabel("优先级:"))
+        self._priority_combo = QComboBox()
+        self._priority_combo.addItems(["All", "High", "Medium", "Low"])
+        filter_layout.addWidget(self._priority_combo)
+
+        filter_layout.addWidget(QLabel("状态:"))
+        self._status_combo = QComboBox()
+        self._status_combo.addItems(["All", "Pending", "Completed"])
+        filter_layout.addWidget(self._status_combo)
+
+        self._clear_filter_btn = QPushButton("清除")
+        self._clear_filter_btn.setFixedWidth(60)
+        filter_layout.addWidget(self._clear_filter_btn)
+
+        filter_layout.addStretch()
+        layout.addWidget(filter_widget)
+
+        # --- Table ---
+        self._table = QTableView()
+        self._table.setModel(self._model)
+        self._table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
+        self._table.setAlternatingRowColors(True)
+        self._table.setSortingEnabled(False)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+        h_header = self._table.horizontalHeader()
+        h_header.setStretchLastSection(True)
+        h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        h_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        h_header.resizeSection(1, 80)
+        h_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        h_header.resizeSection(2, 110)
+        h_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        h_header.resizeSection(3, 80)
+
+        v_header = self._table.verticalHeader()
+        v_header.setVisible(False)
+
+        layout.addWidget(self._table)
+
+    def _init_menu_bar(self):
+        menu_bar = self.menuBar()
+
+        file_menu = menu_bar.addMenu("文件(&F)")
+        add_action = QAction("添加任务(&A)", self)
+        add_action.setShortcut("Ctrl+N")
+        file_menu.addAction(add_action)
+
+        edit_action = QAction("编辑任务(&E)", self)
+        edit_action.setShortcut("Ctrl+E")
+        file_menu.addAction(edit_action)
+
+        file_menu.addSeparator()
+        exit_action = QAction("退出(&X)", self)
+        exit_action.setShortcut("Alt+F4")
+        file_menu.addAction(exit_action)
+
+        view_menu = menu_bar.addMenu("视图(&V)")
+        settings_action = QAction("设置(&S)...", self)
+        view_menu.addAction(settings_action)
+
+        help_menu = menu_bar.addMenu("帮助(&H)")
+        about_action = QAction("关于(&A)", self)
+        help_menu.addAction(about_action)
+
+        # Store references
+        self._act_add = add_action
+        self._act_edit = edit_action
+        self._act_exit = exit_action
+        self._act_settings = settings_action
+        self._act_about = about_action
+
+    def _init_tool_bar(self):
+        toolbar = QToolBar("工具栏")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        # Add
+        act = QAction("➕ 添加", self)
+        act.setToolTip("添加新任务")
+        toolbar.addAction(act)
+        self._tb_add = act
+
+        # Complete
+        act = QAction("✓ 完成", self)
+        act.setToolTip("切换任务完成状态")
+        toolbar.addAction(act)
+        self._tb_complete = act
+
+        # Delete
+        act = QAction("🗑 删除", self)
+        act.setToolTip("删除选中任务")
+        toolbar.addAction(act)
+        self._tb_delete = act
+
+    def _init_status_bar(self):
+        self._status_label = QLabel("就绪")
+        self.statusBar().addWidget(self._status_label)
+
+    def _init_tray(self):
+        self._tray = TrayManager(self)
+        self._tray.show_requested.connect(self._show_from_tray)
+        self._tray.add_task_requested.connect(self._on_add_task)
+        self._tray.exit_requested.connect(self._quit_app)
+
+    def _connect_signals(self):
+        # Filter
+        self._search_box.textChanged.connect(self._apply_filters)
+        self._priority_combo.currentTextChanged.connect(self._apply_filters)
+        self._status_combo.currentTextChanged.connect(self._apply_filters)
+        self._clear_filter_btn.clicked.connect(self._clear_filters)
+
+        # Table
+        self._table.doubleClicked.connect(self._on_edit_current_task)
+        self._table.customContextMenuRequested.connect(self._show_context_menu)
+        self._table.horizontalHeader().sortIndicatorChanged.connect(self._on_sort_changed)
+
+        # Menu
+        self._act_add.triggered.connect(self._on_add_task)
+        self._act_edit.triggered.connect(self._on_edit_current_task)
+        self._act_exit.triggered.connect(self._quit_app)
+        self._act_settings.triggered.connect(self._on_settings)
+        self._act_about.triggered.connect(self._on_about)
+
+        # Toolbar
+        self._tb_add.triggered.connect(self._on_add_task)
+        self._tb_complete.triggered.connect(self._on_toggle_complete)
+        self._tb_delete.triggered.connect(self._on_delete_task)
+
+    def _apply_filters(self):
+        self._current_filter.search_text = self._search_box.text().strip()
+        self._current_filter.priority = self._priority_combo.currentText()
+        self._current_filter.status = self._status_combo.currentText()
+        self._model.refresh_data(self._current_filter)
+        self._update_status_bar()
+
+    def _clear_filters(self):
+        self._search_box.clear()
+        self._priority_combo.setCurrentIndex(0)
+        self._status_combo.setCurrentIndex(0)
+
+    def _on_sort_changed(self, column: int, order: Qt.SortOrder):
+        self._model.sort(column, order)
+
+    def _on_add_task(self):
+        dlg = TaskDialog(self)
+        if dlg.exec() == TaskDialog.DialogCode.Accepted and dlg.result_task:
+            self._db.add_task(dlg.result_task)
+            self._refresh_view()
+
+    def _on_edit_current_task(self):
+        row = self._table.currentIndex().row()
+        task = self._model.get_task(row)
+        if task is None:
+            return
+        self._edit_task(task)
+
+    def _edit_task(self, task):
+        dlg = TaskDialog(self, task)
+        if dlg.exec() == TaskDialog.DialogCode.Accepted and dlg.result_task:
+            dlg.result_task.id = task.id
+            self._db.update_task(dlg.result_task)
+            self._refresh_view()
+
+    def _on_toggle_complete(self):
+        rows = self._selected_rows()
+        for task in rows:
+            self._db.toggle_complete(task.id)
+        self._refresh_view()
+
+    def _on_delete_task(self):
+        rows = self._selected_rows()
+        if not rows:
+            return
+        count = len(rows)
+        title = rows[0].title if count == 1 else f"({count}个任务)"
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除 {title} 吗？此操作不可恢复。"
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            for task in rows:
+                self._db.delete_task(task.id)
+            self._refresh_view()
+
+    def _show_context_menu(self, point: QPoint):
+        index = self._table.indexAt(point)
+        if not index.isValid():
+            return
+        task = self._model.get_task(index.row())
+        if task is None:
+            return
+
+        menu = QMenu(self)
+
+        act_edit = menu.addAction("编辑")
+        act_edit.triggered.connect(lambda: self._edit_task(task))
+
+        label = "标为已完成" if task.status == "pending" else "标为待完成"
+        act_toggle = menu.addAction(label)
+        act_toggle.triggered.connect(lambda: self._db.toggle_complete(task.id) or self._refresh_view())
+
+        menu.addSeparator()
+        act_del = menu.addAction("删除")
+        act_del.triggered.connect(lambda: self._on_delete_single(task))
+
+        menu.exec(self._table.viewport().mapToGlobal(point))
+
+    def _on_delete_single(self, task):
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除「{task.title}」吗？此操作不可恢复。"
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._db.delete_task(task.id)
+            self._refresh_view()
+
+    def _on_settings(self):
+        dlg = SettingsDialog(self, self._db)
+        dlg.exec()
+
+    def _on_about(self):
+        QMessageBox.about(
+            self, "关于 Todo-List",
+            "<b>Todo-List</b> v1.0<br><br>"
+            "一个简洁的桌面待办事项管理工具。<br>"
+            "PyQt6 + SQLite 构建。"
+        )
+
+    def _selected_rows(self) -> list:
+        rows = []
+        for index in self._table.selectionModel().selectedRows():
+            task = self._model.get_task(index.row())
+            if task:
+                rows.append(task)
+        return rows
+
+    def _refresh_view(self):
+        self._model.refresh_data(self._current_filter)
+        self._update_status_bar()
+
+    def _update_status_bar(self):
+        total, pending, completed = self._model.task_count()
+        self._status_label.setText(
+            f"共 {total} 个任务 | {pending} 待完成 | {completed} 已完成"
+        )
+
+    def _load_settings(self):
+        geom_str = self._db.get_setting("window_geometry")
+        if geom_str:
+            try:
+                self.restoreGeometry(QByteArray.fromHex(geom_str.encode()))
+            except Exception:
+                pass
+
+    def _save_settings(self):
+        self._db.set_setting("window_geometry", self.saveGeometry().toHex().data().decode())
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _quit_app(self):
+        self._save_settings()
+        if self._tray:
+            self._tray.hide()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        minimize_to_tray = self._db.get_setting("minimize_to_tray", "1") == "1"
+        if minimize_to_tray and self._tray and self._tray.is_available():
+            self.hide()
+            event.ignore()
+        else:
+            self._save_settings()
+            if self._tray:
+                self._tray.hide()
+            event.accept()

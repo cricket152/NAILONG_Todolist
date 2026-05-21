@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.db
+dist/
+build/
+*.spec.bak
+*.egg-info/
+.env
+TodoListPyQt6/
