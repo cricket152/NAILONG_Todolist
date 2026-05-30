@@ -1,8 +1,8 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTableView, QHeaderView, QMenuBar, QMenu, QToolBar,
+    QTableView, QHeaderView, QMenuBar, QMenu,
     QStatusBar, QLabel, QLineEdit, QComboBox, QPushButton,
-    QMessageBox
+    QTabBar, QMessageBox
 )
 from PyQt6.QtCore import Qt, QByteArray, QPoint
 from PyQt6.QtGui import QAction, QIcon
@@ -15,6 +15,10 @@ from .task_table_model import TaskTableModel
 from .task_dialog import TaskDialog
 from .settings_dialog import SettingsDialog
 from .tray_manager import TrayManager
+from .delete_delegate import DeleteButtonDelegate
+
+TAB_LABELS = ["🕐 DDL任务", "📋 每日任务", "📅 每周任务"]
+TAB_TYPES = ["ddl", "daily", "weekly"]
 
 
 class MainWindow(QMainWindow):
@@ -24,8 +28,8 @@ class MainWindow(QMainWindow):
         self._tray: TrayManager | None = None
 
         self.setWindowTitle("Todo-List")
-        self.resize(860, 560)
-        self.setMinimumSize(640, 380)
+        self.resize(860, 580)
+        self.setMinimumSize(640, 400)
 
         icon_path = self._get_icon_path()
         if icon_path:
@@ -34,7 +38,6 @@ class MainWindow(QMainWindow):
         self._init_model()
         self._init_ui()
         self._init_menu_bar()
-        self._init_tool_bar()
         self._init_status_bar()
         self._init_tray()
         self._connect_signals()
@@ -43,18 +46,27 @@ class MainWindow(QMainWindow):
 
     def _init_model(self):
         self._model = TaskTableModel(self._db, self)
-        self._current_filter = FilterParams()
+        self._current_filter = FilterParams(task_type="ddl")
 
     def _get_icon_path(self):
-        p = resource_path("resources/app_icon.png")
+        p = resource_path("resources/app_icon2.png")
         return p if os.path.exists(p) else None
 
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 8, 12, 12)
+        layout.setSpacing(8)
+
+        # --- Navigation tab bar ---
+        self._tab_bar = QTabBar()
+        self._tab_bar.setExpanding(False)
+        self._tab_bar.setDrawBase(False)
+        for label in TAB_LABELS:
+            self._tab_bar.addTab(label)
+        self._tab_bar.setCurrentIndex(0)
+        layout.addWidget(self._tab_bar)
 
         # --- Filter bar ---
         filter_widget = QWidget()
@@ -63,7 +75,6 @@ class MainWindow(QMainWindow):
         filter_layout.setSpacing(10)
 
         filter_layout.addWidget(QLabel("搜索:"))
-
         self._search_box = QLineEdit()
         self._search_box.setPlaceholderText("搜索任务...")
         self._search_box.setClearButtonEnabled(True)
@@ -74,9 +85,13 @@ class MainWindow(QMainWindow):
         self._priority_combo.addItems(["All", "High", "Medium", "Low"])
         filter_layout.addWidget(self._priority_combo)
 
-        filter_layout.addWidget(QLabel("状态:"))
+        self._status_label_widget = QLabel("状态:")
         self._status_combo = QComboBox()
         self._status_combo.addItems(["All", "Pending", "Completed"])
+        self._status_label_widget.setVisible(True)
+        self._status_combo.setVisible(True)
+
+        filter_layout.addWidget(self._status_label_widget)
         filter_layout.addWidget(self._status_combo)
 
         self._clear_filter_btn = QPushButton("清除")
@@ -95,20 +110,40 @@ class MainWindow(QMainWindow):
         self._table.setSortingEnabled(False)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-        h_header = self._table.horizontalHeader()
-        h_header.setStretchLastSection(True)
-        h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        h_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        h_header.resizeSection(1, 80)
-        h_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        h_header.resizeSection(2, 110)
-        h_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        h_header.resizeSection(3, 80)
-
         v_header = self._table.verticalHeader()
         v_header.setVisible(False)
 
         layout.addWidget(self._table)
+
+        # Delete button delegate
+        self._delete_delegate = DeleteButtonDelegate(self._table)
+        self._delete_delegate.delete_clicked.connect(self._on_delete_by_id)
+
+        self._apply_column_layout("ddl")
+
+    def _apply_column_layout(self, task_type: str):
+        h_header = self._table.horizontalHeader()
+        action_col = 4 if task_type == "ddl" else 2
+        if task_type == "ddl":
+            h_header.setStretchLastSection(False)
+            h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            h_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+            h_header.resizeSection(1, 64)
+            h_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            h_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+            h_header.resizeSection(3, 72)
+        else:
+            h_header.setStretchLastSection(False)
+            h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            h_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+            h_header.resizeSection(1, 72)
+        h_header.setSectionResizeMode(action_col, QHeaderView.ResizeMode.Fixed)
+        h_header.resizeSection(action_col, 44)
+
+        # Clear delegates from all columns, then set only on action column
+        for c in range(self._model.columnCount() + 2):  # +2 to cover previous column count
+            self._table.setItemDelegateForColumn(c, None)
+        self._table.setItemDelegateForColumn(action_col, self._delete_delegate)
 
     def _init_menu_bar(self):
         menu_bar = self.menuBar()
@@ -135,35 +170,11 @@ class MainWindow(QMainWindow):
         about_action = QAction("关于(&A)", self)
         help_menu.addAction(about_action)
 
-        # Store references
         self._act_add = add_action
         self._act_edit = edit_action
         self._act_exit = exit_action
         self._act_settings = settings_action
         self._act_about = about_action
-
-    def _init_tool_bar(self):
-        toolbar = QToolBar("工具栏")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-
-        # Add
-        act = QAction("➕ 添加", self)
-        act.setToolTip("添加新任务")
-        toolbar.addAction(act)
-        self._tb_add = act
-
-        # Complete
-        act = QAction("✓ 完成", self)
-        act.setToolTip("切换任务完成状态")
-        toolbar.addAction(act)
-        self._tb_complete = act
-
-        # Delete
-        act = QAction("🗑 删除", self)
-        act.setToolTip("删除选中任务")
-        toolbar.addAction(act)
-        self._tb_delete = act
 
     def _init_status_bar(self):
         self._status_label = QLabel("就绪")
@@ -176,6 +187,9 @@ class MainWindow(QMainWindow):
         self._tray.exit_requested.connect(self._quit_app)
 
     def _connect_signals(self):
+        # Tab bar
+        self._tab_bar.currentChanged.connect(self._on_tab_changed)
+
         # Filter
         self._search_box.textChanged.connect(self._apply_filters)
         self._priority_combo.currentTextChanged.connect(self._apply_filters)
@@ -194,10 +208,27 @@ class MainWindow(QMainWindow):
         self._act_settings.triggered.connect(self._on_settings)
         self._act_about.triggered.connect(self._on_about)
 
-        # Toolbar
-        self._tb_add.triggered.connect(self._on_add_task)
-        self._tb_complete.triggered.connect(self._on_toggle_complete)
-        self._tb_delete.triggered.connect(self._on_delete_task)
+    def _on_tab_changed(self, index: int):
+        task_type = TAB_TYPES[index]
+        is_ddl = task_type == "ddl"
+
+        # Show/hide status filter for DDL only
+        self._status_label_widget.setVisible(is_ddl)
+        self._status_combo.setVisible(is_ddl)
+        if not is_ddl:
+            self._status_combo.setCurrentIndex(0)
+
+        # Update model
+        self._model.set_task_type(task_type)
+        self._current_filter.task_type = task_type
+
+        # Reset sort
+        self._model.sort(-1, Qt.SortOrder.AscendingOrder)
+
+        # Adjust columns
+        self._apply_column_layout(task_type)
+
+        self._refresh_view()
 
     def _apply_filters(self):
         self._current_filter.search_text = self._search_box.text().strip()
@@ -217,8 +248,16 @@ class MainWindow(QMainWindow):
     def _on_add_task(self):
         dlg = TaskDialog(self)
         if dlg.exec() == TaskDialog.DialogCode.Accepted and dlg.result_task:
+            # If adding from a different tab, task_type from dialog overrides
             self._db.add_task(dlg.result_task)
-            self._refresh_view()
+            # Switch to the tab matching the new task's type
+            new_type = dlg.result_task.task_type
+            if new_type != self._current_filter.task_type:
+                idx = TAB_TYPES.index(new_type)
+                self._tab_bar.setCurrentIndex(idx)
+                self._on_tab_changed(idx)
+            else:
+                self._refresh_view()
 
     def _on_edit_current_task(self):
         row = self._table.currentIndex().row()
@@ -232,7 +271,14 @@ class MainWindow(QMainWindow):
         if dlg.exec() == TaskDialog.DialogCode.Accepted and dlg.result_task:
             dlg.result_task.id = task.id
             self._db.update_task(dlg.result_task)
-            self._refresh_view()
+            # Switch tab if type changed
+            new_type = dlg.result_task.task_type
+            if new_type != self._current_filter.task_type:
+                idx = TAB_TYPES.index(new_type)
+                self._tab_bar.setCurrentIndex(idx)
+                self._on_tab_changed(idx)
+            else:
+                self._refresh_view()
 
     def _on_toggle_complete(self):
         rows = self._selected_rows()
@@ -264,7 +310,6 @@ class MainWindow(QMainWindow):
             return
 
         menu = QMenu(self)
-
         act_edit = menu.addAction("编辑")
         act_edit.triggered.connect(lambda: self._edit_task(task))
 
@@ -285,6 +330,18 @@ class MainWindow(QMainWindow):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._db.delete_task(task.id)
+            self._refresh_view()
+
+    def _on_delete_by_id(self, task_id: int):
+        task = self._model.get_task_by_id(task_id)
+        if task is None:
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除「{task.title}」吗？此操作不可恢复。"
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._db.delete_task(task_id)
             self._refresh_view()
 
     def _on_settings(self):

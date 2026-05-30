@@ -34,7 +34,7 @@ class TrayManager(QObject):
             self._tray.show()
 
     def _load_tray_icon(self) -> QIcon:
-        p = resource_path("resources/app_icon.png")
+        p = resource_path("resources/app_icon2.png")
         if os.path.exists(p):
             return QIcon(p)
         return self._create_fallback_icon()

@@ -17,7 +17,7 @@ def main() -> int:
     app.setOrganizationName("TodoListApp")
 
     # Set app icon (taskbar)
-    icon_path = resource_path("resources/app_icon.png")
+    icon_path = resource_path("resources/app_icon2.png")
     from PyQt6.QtGui import QIcon
     if os.path.exists(icon_path):
         app_icon = QIcon(icon_path)

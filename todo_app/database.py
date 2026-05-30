@@ -27,7 +27,9 @@ class DatabaseManager:
                 status      TEXT NOT NULL DEFAULT 'pending'
                             CHECK(status IN ('pending','completed')),
                 created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                completed_at TEXT
+                completed_at TEXT,
+                task_type   TEXT NOT NULL DEFAULT 'ddl'
+                            CHECK(task_type IN ('ddl','daily','weekly'))
             );
 
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -43,12 +45,18 @@ class DatabaseManager:
             INSERT OR IGNORE INTO settings (key, value) VALUES ('minimize_to_tray', '1');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('window_geometry', '');
         """)
+        # Migration: add task_type column if upgrading from old schema
+        try:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'ddl'")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type)")
+        except:
+            pass
         self._conn.commit()
 
     def add_task(self, task: Task) -> int:
         cursor = self._conn.execute(
-            "INSERT INTO tasks (title, description, priority, due_date, status) VALUES (?, ?, ?, ?, ?)",
-            (task.title, task.description, task.priority, task.due_date, task.status)
+            "INSERT INTO tasks (title, description, priority, due_date, status, task_type) VALUES (?, ?, ?, ?, ?, ?)",
+            (task.title, task.description, task.priority, task.due_date, task.status, task.task_type)
         )
         self._conn.commit()
         return cursor.lastrowid
@@ -56,9 +64,9 @@ class DatabaseManager:
     def update_task(self, task: Task):
         self._conn.execute(
             """UPDATE tasks SET title=?, description=?, priority=?, due_date=?,
-               status=?, completed_at=? WHERE id=?""",
+               status=?, completed_at=?, task_type=? WHERE id=?""",
             (task.title, task.description, task.priority, task.due_date,
-             task.status, task.completed_at, task.id)
+             task.status, task.completed_at, task.task_type, task.id)
         )
         self._conn.commit()
 
@@ -89,6 +97,10 @@ class DatabaseManager:
 
         sql = "SELECT * FROM tasks WHERE 1=1"
         params = []
+
+        if filter_params.task_type:
+            sql += " AND task_type = ?"
+            params.append(filter_params.task_type)
 
         if filter_params.search_text:
             sql += " AND (title LIKE ? OR description LIKE ?)"
