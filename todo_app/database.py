@@ -120,6 +120,36 @@ class DatabaseManager:
         cursor = self._conn.execute(sql, params)
         return [Task.from_row(row) for row in cursor.fetchall()]
 
+    @staticmethod
+    def _sort_tasks_by_type_priority(tasks: list[Task]) -> list[Task]:
+        """Sort tasks: ddl → daily → weekly, within each high → medium → low."""
+        type_order = {"ddl": 0, "daily": 1, "weekly": 2}
+        priority_order = {"high": 0, "medium": 1, "low": 2}
+        tasks.sort(key=lambda t: (
+            type_order.get(t.task_type, 99),
+            priority_order.get(t.priority, 99)
+        ))
+        return tasks
+
+    def get_today_tasks(self) -> list[Task]:
+        """Return today's active tasks: all unfinished DDL, daily, and weekly tasks,
+        sorted by type priority then priority level."""
+        sql = """
+            SELECT * FROM tasks WHERE status = 'pending'
+            AND task_type IN ('ddl', 'daily', 'weekly')
+        """
+        cursor = self._conn.execute(sql)
+        rows = cursor.fetchall()
+        return self._sort_tasks_by_type_priority([Task.from_row(row) for row in rows])
+
+    def get_all_tasks_combined(self) -> list[Task]:
+        """Return all tasks (any status): DDL, daily, and weekly,
+        sorted by type priority then priority level."""
+        sql = "SELECT * FROM tasks WHERE task_type IN ('ddl', 'daily', 'weekly')"
+        cursor = self._conn.execute(sql)
+        rows = cursor.fetchall()
+        return self._sort_tasks_by_type_priority([Task.from_row(row) for row in rows])
+
     def get_task_by_id(self, task_id: int) -> Task | None:
         cursor = self._conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
         row = cursor.fetchone()

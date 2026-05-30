@@ -16,8 +16,9 @@ from .task_dialog import TaskDialog
 from .settings_dialog import SettingsDialog
 from .tray_manager import TrayManager
 from .delete_delegate import DeleteButtonDelegate
+from .today_task_dialog import TodayTaskDialog
 
-TAB_LABELS = ["🕐 DDL任务", "📋 每日任务", "📅 每周任务"]
+TAB_LABELS = ["DDL任务", "每日任务", "每周任务"]
 TAB_TYPES = ["ddl", "daily", "weekly"]
 
 
@@ -162,6 +163,14 @@ class MainWindow(QMainWindow):
         exit_action.setShortcut("Alt+F4")
         file_menu.addAction(exit_action)
 
+        remind_menu = menu_bar.addMenu("提醒(&R)")
+        today_action = QAction("今日任务(&T)", self)
+        today_action.setShortcut("Ctrl+T")
+        remind_menu.addAction(today_action)
+        all_action = QAction("全部任务(&A)", self)
+        all_action.setShortcut("Ctrl+Shift+A")
+        remind_menu.addAction(all_action)
+
         view_menu = menu_bar.addMenu("视图(&V)")
         settings_action = QAction("设置(&S)...", self)
         view_menu.addAction(settings_action)
@@ -173,6 +182,8 @@ class MainWindow(QMainWindow):
         self._act_add = add_action
         self._act_edit = edit_action
         self._act_exit = exit_action
+        self._act_today = today_action
+        self._act_all = all_action
         self._act_settings = settings_action
         self._act_about = about_action
 
@@ -206,6 +217,8 @@ class MainWindow(QMainWindow):
         self._act_edit.triggered.connect(self._on_edit_current_task)
         self._act_exit.triggered.connect(self._quit_app)
         self._act_settings.triggered.connect(self._on_settings)
+        self._act_today.triggered.connect(self._on_today_tasks)
+        self._act_all.triggered.connect(self._on_all_tasks)
         self._act_about.triggered.connect(self._on_about)
 
     def _on_tab_changed(self, index: int):
@@ -355,6 +368,18 @@ class MainWindow(QMainWindow):
             "一个简洁的桌面待办事项管理工具。<br>"
             "PyQt6 + SQLite 构建。"
         )
+
+    def _on_today_tasks(self):
+        from datetime import datetime
+        today_str = datetime.now().strftime("%Y年%m月%d日")
+        tasks = self._db.get_today_tasks()
+        dlg = TodayTaskDialog(tasks, f"{today_str} 待完成任务", self)
+        dlg.exec()
+
+    def _on_all_tasks(self):
+        tasks = self._db.get_all_tasks_combined()
+        dlg = TodayTaskDialog(tasks, "全部任务", self)
+        dlg.exec()
 
     def _selected_rows(self) -> list:
         rows = []

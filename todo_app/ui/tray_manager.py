@@ -57,8 +57,18 @@ class TrayManager(QObject):
         return QIcon(pixmap)
 
     def _on_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.show_requested.emit()
+        try:
+            if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+                self.show_requested.emit()
+        except TypeError:
+            # PyQt6 on some Windows versions cannot convert the C++
+            # ActivationReason enum to a Python object for comparison.
+            # DoubleClick has the integer value 2.
+            try:
+                if int(reason) == 2:
+                    self.show_requested.emit()
+            except (TypeError, ValueError):
+                pass
 
     def is_available(self) -> bool:
         return self._tray.isSystemTrayAvailable()
