@@ -8,10 +8,12 @@ from PyQt6.QtGui import QColor
 from ..models import Task, FilterParams
 from ..database import DatabaseManager
 
-COLUMNS_DDL = ["标题", "优先级", "截止日期", "状态", "操作"]
-COLUMNS_SIMPLE = ["标题", "优先级", "操作"]
-ACTION_COL_DDL = 4
-ACTION_COL_SIMPLE = 2
+COLUMNS_DDL = ["标题", "优先级", "截止日期", "状态", "完成", "删除"]
+COLUMNS_SIMPLE = ["标题", "优先级", "完成", "删除"]
+ACTION_COL_DDL = 5
+ACTION_COL_SIMPLE = 3
+CHECK_COL_DDL = 4
+CHECK_COL_SIMPLE = 2
 
 PRIORITY_MAP = {"high": "高", "medium": "中", "low": "低"}
 STATUS_MAP = {"pending": "待完成", "completed": "已完成"}
@@ -46,7 +48,11 @@ class TaskTableModel(QAbstractTableModel):
             return False
         if not task.due_date or task.status != "pending":
             return False
-        return task.due_date < datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            due_dt = datetime.strptime(task.due_date, "%Y-%m-%d %H:%M")
+            return due_dt < datetime.now()
+        except ValueError:
+            return task.due_date < datetime.now().strftime("%Y-%m-%d %H:%M")
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
@@ -54,6 +60,10 @@ class TaskTableModel(QAbstractTableModel):
         task = self._tasks[index.row()]
         col = index.column()
         is_ddl = self._task_type == "ddl"
+        check_col = CHECK_COL_DDL if is_ddl else CHECK_COL_SIMPLE
+
+        if role == Qt.ItemDataRole.CheckStateRole and col == check_col:
+            return Qt.CheckState.Checked if task.status == "completed" else Qt.CheckState.Unchecked
 
         if role == Qt.ItemDataRole.DisplayRole:
             if col == 0:
@@ -77,7 +87,8 @@ class TaskTableModel(QAbstractTableModel):
                 return QColor("#6B8E6B") if task.status == "completed" else QColor("#6D4C41")
 
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            if col in (1, 2, 3) if is_ddl else col == 1:
+            center_cols = (1, 2, 3, check_col) if is_ddl else (1, check_col)
+            if col in center_cols:
                 return Qt.AlignmentFlag.AlignCenter
 
         if role == Qt.ItemDataRole.ToolTipRole:
@@ -89,6 +100,45 @@ class TaskTableModel(QAbstractTableModel):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return self.columns[section]
         return None
+
+    def flags(self, index):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        is_ddl = self._task_type == "ddl"
+        check_col = CHECK_COL_DDL if is_ddl else CHECK_COL_SIMPLE
+        if index.column() == check_col:
+            return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
+        if not index.isValid():
+            return False
+        is_ddl = self._task_type == "ddl"
+        check_col = CHECK_COL_DDL if is_ddl else CHECK_COL_SIMPLE
+        if role == Qt.ItemDataRole.CheckStateRole and index.column() == check_col:
+            task = self._tasks[index.row()]
+            new_status = "completed" if value == Qt.CheckState.Checked else "pending"
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if new_status == "completed":
+                self._db._conn.execute(
+                    "UPDATE tasks SET status='completed', completed_at=? WHERE id=?",
+                    (now, task.id)
+                )
+            else:
+                self._db._conn.execute(
+                    "UPDATE tasks SET status='pending', completed_at=NULL WHERE id=?",
+                    (task.id,)
+                )
+            self._db._conn.commit()
+            task.status = new_status
+            task.completed_at = now if new_status == "completed" else None
+            self.dataChanged.emit(index, index, [role])
+            # Also emit dataChanged for status column (col 3 in DDL) to update display
+            if is_ddl:
+                status_idx = self.index(index.row(), 3)
+                self.dataChanged.emit(status_idx, status_idx, [Qt.ItemDataRole.DisplayRole])
+            return True
+        return False
 
     def refresh_data(self, filter_params: FilterParams = None):
         self.beginResetModel()
@@ -113,11 +163,13 @@ class TaskTableModel(QAbstractTableModel):
                 1: lambda t: {"high": 0, "medium": 1, "low": 2}[t.priority],
                 2: lambda t: t.due_date or "9999",
                 3: lambda t: t.status,
+                4: lambda t: t.status,   # checkbox column sorts by status
             }
         else:
             key_map = {
                 0: lambda t: t.title.lower(),
                 1: lambda t: {"high": 0, "medium": 1, "low": 2}[t.priority],
+                2: lambda t: t.status,   # checkbox column sorts by status
             }
         key = key_map.get(self._sort_column, lambda t: t.created_at)
         self._tasks.sort(key=key, reverse=self._sort_order == Qt.SortOrder.DescendingOrder)

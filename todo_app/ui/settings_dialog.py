@@ -39,6 +39,8 @@ class SettingsDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确认")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

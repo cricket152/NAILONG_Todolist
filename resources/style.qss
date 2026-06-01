@@ -127,11 +127,16 @@ QComboBox {
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
-    width: 20px;
+    width: 24px;
     border-left: 1px solid #E6DFD5;
     border-top-right-radius: 6px;
     border-bottom-right-radius: 6px;
     background-color: #F3ECE0;
+}
+QComboBox::down-arrow {
+    image: url(resources/down_arrow.svg);
+    width: 12px;
+    height: 8px;
 }
 QComboBox QAbstractItemView {
     background-color: #FDFBF7;
@@ -144,11 +149,56 @@ QComboBox QAbstractItemView {
 QDateEdit::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
-    width: 20px;
+    width: 24px;
     border-left: 1px solid #E6DFD5;
     border-top-right-radius: 6px;
     border-bottom-right-radius: 6px;
     background-color: #F3ECE0;
+}
+QTimeEdit::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: 1px solid #E6DFD5;
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+    background-color: #F3ECE0;
+}
+
+/* --- 日期/时间微调按钮 --- */
+QDateEdit::up-button, QTimeEdit::up-button {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 18px;
+    border: none;
+    border-left: 1px solid #E6DFD5;
+    border-top-right-radius: 6px;
+    background-color: #F3ECE0;
+}
+QDateEdit::up-button:hover, QTimeEdit::up-button:hover {
+    background-color: #E5DEC9;
+}
+QDateEdit::up-arrow, QTimeEdit::up-arrow {
+    image: url(resources/up_arrow.svg);
+    width: 12px;
+    height: 8px;
+}
+QDateEdit::down-button, QTimeEdit::down-button {
+    subcontrol-origin: padding;
+    subcontrol-position: bottom right;
+    width: 18px;
+    border: none;
+    border-left: 1px solid #E6DFD5;
+    border-bottom-right-radius: 6px;
+    background-color: #F3ECE0;
+}
+QDateEdit::down-button:hover, QTimeEdit::down-button:hover {
+    background-color: #E5DEC9;
+}
+QDateEdit::down-arrow, QTimeEdit::down-arrow {
+    image: url(resources/down_arrow.svg);
+    width: 12px;
+    height: 8px;
 }
 
 /* ===== 按钮 ===== */

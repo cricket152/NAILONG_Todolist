@@ -27,9 +27,16 @@ def main() -> int:
     style_path = resource_path("resources/style.qss")
     if os.path.exists(style_path):
         with open(style_path, "r", encoding="utf-8") as f:
-            app.setStyleSheet(f.read())
+            stylesheet = f.read()
+        # Resolve relative url() paths for both dev and frozen modes
+        resources_dir = os.path.dirname(style_path).replace('\\', '/')
+        stylesheet = stylesheet.replace(
+            'url(resources/', f'url({resources_dir}/'
+        )
+        app.setStyleSheet(stylesheet)
 
     db = DatabaseManager()
+    db.check_and_reset_tasks()  # Reset daily/weekly tasks if day/week changed
     window = MainWindow(db)
     window.show()
 

@@ -71,6 +71,7 @@ class TodayTaskDialog(QDialog):
 
         # Close button
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("关闭")
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
@@ -105,12 +106,14 @@ class TodayTaskDialog(QDialog):
             due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 3, due_item)
 
-            # Status — check overdue
+            # Status — check overdue (use datetime objects for second-level precision)
             is_overdue = False
             if task.task_type == "ddl" and task.due_date and task.status == "pending":
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                if task.due_date < now_str:
-                    is_overdue = True
+                try:
+                    due_dt = datetime.strptime(task.due_date, "%Y-%m-%d %H:%M")
+                    is_overdue = due_dt < datetime.now()
+                except ValueError:
+                    is_overdue = task.due_date < datetime.now().strftime("%Y-%m-%d %H:%M")
 
             if task.status == "completed":
                 status_text = "✅ 已完成"

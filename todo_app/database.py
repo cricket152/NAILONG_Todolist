@@ -150,6 +150,33 @@ class DatabaseManager:
         rows = cursor.fetchall()
         return self._sort_tasks_by_type_priority([Task.from_row(row) for row in rows])
 
+    def check_and_reset_tasks(self):
+        """Reset daily tasks at midnight and weekly tasks on Sunday midnight."""
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        weekday = now.weekday()  # Monday=0, Sunday=6
+
+        # Daily reset: reset if last reset date != today
+        last_daily = self.get_setting("last_daily_reset", "")
+        if last_daily != today_str:
+            self._conn.execute(
+                "UPDATE tasks SET status='pending', completed_at=NULL "
+                "WHERE task_type='daily' AND status='completed'"
+            )
+            self.set_setting("last_daily_reset", today_str)
+
+        # Weekly reset: reset on Sunday if last reset week != current week
+        iso_year, iso_week, _ = now.isocalendar()
+        current_week_key = f"{iso_year}-W{iso_week}"
+        last_weekly = self.get_setting("last_weekly_reset", "")
+        if weekday == 6 and last_weekly != current_week_key:
+            self._conn.execute(
+                "UPDATE tasks SET status='pending', completed_at=NULL "
+                "WHERE task_type='weekly' AND status='completed'"
+            )
+            self.set_setting("last_weekly_reset", current_week_key)
+        self._conn.commit()
+
     def get_task_by_id(self, task_id: int) -> Task | None:
         cursor = self._conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
         row = cursor.fetchone()

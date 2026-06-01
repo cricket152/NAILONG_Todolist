@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QStatusBar, QLabel, QLineEdit, QComboBox, QPushButton,
     QTabBar, QMessageBox
 )
-from PyQt6.QtCore import Qt, QByteArray, QPoint
+from PyQt6.QtCore import Qt, QByteArray, QPoint, QTimer
 from PyQt6.QtGui import QAction, QIcon
 
 from ..models import FilterParams
@@ -17,6 +17,7 @@ from .settings_dialog import SettingsDialog
 from .tray_manager import TrayManager
 from .delete_delegate import DeleteButtonDelegate
 from .today_task_dialog import TodayTaskDialog
+from .checkbox_delegate import CheckBoxDelegate
 
 TAB_LABELS = ["DDL任务", "每日任务", "每周任务"]
 TAB_TYPES = ["ddl", "daily", "weekly"]
@@ -42,6 +43,7 @@ class MainWindow(QMainWindow):
         self._init_status_bar()
         self._init_tray()
         self._connect_signals()
+        self._init_overdue_timer()
         self._load_settings()
         self._refresh_view()
 
@@ -83,12 +85,17 @@ class MainWindow(QMainWindow):
 
         filter_layout.addWidget(QLabel("优先级:"))
         self._priority_combo = QComboBox()
-        self._priority_combo.addItems(["All", "High", "Medium", "Low"])
+        self._priority_combo.addItem("全部", "All")
+        self._priority_combo.addItem("高", "High")
+        self._priority_combo.addItem("中", "Medium")
+        self._priority_combo.addItem("低", "Low")
         filter_layout.addWidget(self._priority_combo)
 
         self._status_label_widget = QLabel("状态:")
         self._status_combo = QComboBox()
-        self._status_combo.addItems(["All", "Pending", "Completed"])
+        self._status_combo.addItem("全部", "All")
+        self._status_combo.addItem("待完成", "Pending")
+        self._status_combo.addItem("已完成", "Completed")
         self._status_label_widget.setVisible(True)
         self._status_combo.setVisible(True)
 
@@ -120,30 +127,37 @@ class MainWindow(QMainWindow):
         self._delete_delegate = DeleteButtonDelegate(self._table)
         self._delete_delegate.delete_clicked.connect(self._on_delete_by_id)
 
+        # Checkbox delegate
+        self._check_delegate = CheckBoxDelegate(self._table)
+
         self._apply_column_layout("ddl")
 
     def _apply_column_layout(self, task_type: str):
         h_header = self._table.horizontalHeader()
-        action_col = 4 if task_type == "ddl" else 2
+        action_col = 5 if task_type == "ddl" else 3
+        check_col = 4 if task_type == "ddl" else 2
         if task_type == "ddl":
             h_header.setStretchLastSection(False)
-            h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)   # 标题
             h_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-            h_header.resizeSection(1, 64)
-            h_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            h_header.resizeSection(1, 64)                                       # 优先级
+            h_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)   # 截止日期
             h_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-            h_header.resizeSection(3, 72)
+            h_header.resizeSection(3, 72)                                       # 状态
         else:
             h_header.setStretchLastSection(False)
-            h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            h_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)   # 标题
             h_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-            h_header.resizeSection(1, 72)
+            h_header.resizeSection(1, 72)                                       # 优先级
+        h_header.setSectionResizeMode(check_col, QHeaderView.ResizeMode.Fixed)
+        h_header.resizeSection(check_col, 48)                                   # 完成
         h_header.setSectionResizeMode(action_col, QHeaderView.ResizeMode.Fixed)
-        h_header.resizeSection(action_col, 44)
+        h_header.resizeSection(action_col, 44)                                  # 删除
 
-        # Clear delegates from all columns, then set only on action column
-        for c in range(self._model.columnCount() + 2):  # +2 to cover previous column count
+        # Clear delegates from all columns, then set checkbox and action delegates
+        for c in range(self._model.columnCount() + 2):
             self._table.setItemDelegateForColumn(c, None)
+        self._table.setItemDelegateForColumn(check_col, self._check_delegate)
         self._table.setItemDelegateForColumn(action_col, self._delete_delegate)
 
     def _init_menu_bar(self):
@@ -221,6 +235,17 @@ class MainWindow(QMainWindow):
         self._act_all.triggered.connect(self._on_all_tasks)
         self._act_about.triggered.connect(self._on_about)
 
+    def _init_overdue_timer(self):
+        """Periodically refresh overdue status and check for daily/weekly resets."""
+        self._overdue_timer = QTimer(self)
+        self._overdue_timer.setInterval(15_000)  # 15 seconds
+        self._overdue_timer.timeout.connect(self._on_timer_tick)
+        self._overdue_timer.start()
+
+    def _on_timer_tick(self):
+        self._db.check_and_reset_tasks()
+        self._refresh_view()
+
     def _on_tab_changed(self, index: int):
         task_type = TAB_TYPES[index]
         is_ddl = task_type == "ddl"
@@ -245,8 +270,8 @@ class MainWindow(QMainWindow):
 
     def _apply_filters(self):
         self._current_filter.search_text = self._search_box.text().strip()
-        self._current_filter.priority = self._priority_combo.currentText()
-        self._current_filter.status = self._status_combo.currentText()
+        self._current_filter.priority = self._priority_combo.currentData()
+        self._current_filter.status = self._status_combo.currentData()
         self._model.refresh_data(self._current_filter)
         self._update_status_bar()
 
@@ -305,11 +330,14 @@ class MainWindow(QMainWindow):
             return
         count = len(rows)
         title = rows[0].title if count == 1 else f"({count}个任务)"
-        reply = QMessageBox.question(
-            self, "确认删除",
-            f"确定要删除 {title} 吗？此操作不可恢复。"
+        reply = QMessageBox(
+            QMessageBox.Icon.Question, "确认删除",
+            f"确定要删除 {title} 吗？此操作不可恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        reply.button(QMessageBox.StandardButton.Yes).setText("是")
+        reply.button(QMessageBox.StandardButton.No).setText("否")
+        if reply.exec() == QMessageBox.StandardButton.Yes:
             for task in rows:
                 self._db.delete_task(task.id)
             self._refresh_view()
@@ -337,11 +365,14 @@ class MainWindow(QMainWindow):
         menu.exec(self._table.viewport().mapToGlobal(point))
 
     def _on_delete_single(self, task):
-        reply = QMessageBox.question(
-            self, "确认删除",
-            f"确定要删除「{task.title}」吗？此操作不可恢复。"
+        reply = QMessageBox(
+            QMessageBox.Icon.Question, "确认删除",
+            f"确定要删除「{task.title}」吗？此操作不可恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        reply.button(QMessageBox.StandardButton.Yes).setText("是")
+        reply.button(QMessageBox.StandardButton.No).setText("否")
+        if reply.exec() == QMessageBox.StandardButton.Yes:
             self._db.delete_task(task.id)
             self._refresh_view()
 
@@ -349,11 +380,14 @@ class MainWindow(QMainWindow):
         task = self._model.get_task_by_id(task_id)
         if task is None:
             return
-        reply = QMessageBox.question(
-            self, "确认删除",
-            f"确定要删除「{task.title}」吗？此操作不可恢复。"
+        reply = QMessageBox(
+            QMessageBox.Icon.Question, "确认删除",
+            f"确定要删除「{task.title}」吗？此操作不可恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        reply.button(QMessageBox.StandardButton.Yes).setText("是")
+        reply.button(QMessageBox.StandardButton.No).setText("否")
+        if reply.exec() == QMessageBox.StandardButton.Yes:
             self._db.delete_task(task_id)
             self._refresh_view()
 
