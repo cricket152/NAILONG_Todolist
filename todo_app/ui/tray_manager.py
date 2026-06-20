@@ -73,6 +73,17 @@ class TrayManager(QObject):
     def is_available(self) -> bool:
         return self._tray.isSystemTrayAvailable()
 
+    def show_notification(self, title: str, message: str) -> None:
+        """Show a system tray notification balloon."""
+        if self._tray is None:
+            return
+        try:
+            self._tray.showMessage(
+                title, message, QSystemTrayIcon.MessageIcon.Information, 5000
+            )
+        except Exception:
+            pass
+
     def hide(self):
         if self._tray.isSystemTrayAvailable():
             self._tray.hide()

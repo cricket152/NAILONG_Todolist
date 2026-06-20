@@ -7,4 +7,10 @@ build/
 *.spec.bak
 *.egg-info/
 .env
+.venv/
+venv/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
 TodoListPyQt6/

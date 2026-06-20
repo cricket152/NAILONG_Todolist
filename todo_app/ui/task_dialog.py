@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QDate, QTime, QDateTime
 
-from ..models import Task
+from ..models import Task, PRIORITY_LABELS, PRIORITY_LABELS_REVERSE
 
 
 class TaskDialog(QDialog):
@@ -119,8 +119,7 @@ class TaskDialog(QDialog):
     def _populate(self, task: Task):
         self._title_edit.setText(task.title)
         self._desc_edit.setPlainText(task.description)
-        priority_labels = {"high": "高", "medium": "中", "low": "低"}
-        self._priority_combo.setCurrentText(priority_labels.get(task.priority, "中"))
+        self._priority_combo.setCurrentText(PRIORITY_LABELS.get(task.priority, "中"))
         if task.task_type == "daily":
             self._radio_daily.setChecked(True)
         elif task.task_type == "weekly":
@@ -146,8 +145,7 @@ class TaskDialog(QDialog):
             self._title_edit.setFocus()
             return
 
-        priority_map = {"高": "high", "中": "medium", "低": "low"}
-        priority = priority_map.get(self._priority_combo.currentText(), "medium")
+        priority = PRIORITY_LABELS_REVERSE.get(self._priority_combo.currentText(), "medium")
 
         if self._radio_daily.isChecked():
             task_type = "daily"

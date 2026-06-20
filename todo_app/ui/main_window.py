@@ -2,10 +2,10 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QHeaderView, QMenuBar, QMenu,
     QStatusBar, QLabel, QLineEdit, QComboBox, QPushButton,
-    QTabBar, QMessageBox
+    QTabBar, QMessageBox, QFileDialog
 )
 from PyQt6.QtCore import Qt, QByteArray, QPoint, QTimer
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence
 
 from ..models import FilterParams
 from ..database import DatabaseManager
@@ -18,6 +18,8 @@ from .tray_manager import TrayManager
 from .delete_delegate import DeleteButtonDelegate
 from .today_task_dialog import TodayTaskDialog
 from .checkbox_delegate import CheckBoxDelegate
+from .highlight_delegate import HighlightDelegate
+from .. import export_util
 
 TAB_LABELS = ["DDL任务", "每日任务", "每周任务"]
 TAB_TYPES = ["ddl", "daily", "weekly"]
@@ -28,6 +30,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._db = db
         self._tray: TrayManager | None = None
+
+        # Feature #19: overdue notification dedup
+        self._notified_overdue_ids: set[int] = set()
+        # Feature #20: delete-undo state
+        self._last_deleted_id: int | None = None
 
         self.setWindowTitle("Todo-List")
         self.resize(860, 580)
@@ -46,6 +53,10 @@ class MainWindow(QMainWindow):
         self._init_overdue_timer()
         self._load_settings()
         self._refresh_view()
+
+        # Feature #20: Ctrl+Z undo-delete shortcut (must be after status bar init)
+        self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._undo_shortcut.activated.connect(self._on_undo_delete)
 
     def _init_model(self):
         self._model = TaskTableModel(self._db, self)
@@ -130,6 +141,9 @@ class MainWindow(QMainWindow):
         # Checkbox delegate
         self._check_delegate = CheckBoxDelegate(self._table)
 
+        # Highlight delegate for search matches (Feature #21)
+        self._highlight_delegate = HighlightDelegate(self._table)
+
         self._apply_column_layout("ddl")
 
     def _apply_column_layout(self, task_type: str):
@@ -154,9 +168,11 @@ class MainWindow(QMainWindow):
         h_header.setSectionResizeMode(action_col, QHeaderView.ResizeMode.Fixed)
         h_header.resizeSection(action_col, 44)                                  # 删除
 
-        # Clear delegates from all columns, then set checkbox and action delegates
-        for c in range(self._model.columnCount() + 2):
+        # Clear delegates from all possible delegate columns (checkbox + delete)
+        # across both DDL (cols 4,5) and simple (cols 2,3) layouts.
+        for c in (2, 3, 4, 5):
             self._table.setItemDelegateForColumn(c, None)
+        self._table.setItemDelegateForColumn(0, self._highlight_delegate)
         self._table.setItemDelegateForColumn(check_col, self._check_delegate)
         self._table.setItemDelegateForColumn(action_col, self._delete_delegate)
 
@@ -171,6 +187,11 @@ class MainWindow(QMainWindow):
         edit_action = QAction("编辑任务(&E)", self)
         edit_action.setShortcut("Ctrl+E")
         file_menu.addAction(edit_action)
+
+        file_menu.addSeparator()
+        export_action = QAction("导出任务(&O)...", self)
+        export_action.setShortcut("Ctrl+Shift+E")
+        file_menu.addAction(export_action)
 
         file_menu.addSeparator()
         exit_action = QAction("退出(&X)", self)
@@ -195,6 +216,7 @@ class MainWindow(QMainWindow):
 
         self._act_add = add_action
         self._act_edit = edit_action
+        self._act_export = export_action
         self._act_exit = exit_action
         self._act_today = today_action
         self._act_all = all_action
@@ -203,7 +225,7 @@ class MainWindow(QMainWindow):
 
     def _init_status_bar(self):
         self._status_label = QLabel("就绪")
-        self.statusBar().addWidget(self._status_label)
+        self.statusBar().addPermanentWidget(self._status_label)
 
     def _init_tray(self):
         self._tray = TrayManager(self)
@@ -217,6 +239,7 @@ class MainWindow(QMainWindow):
 
         # Filter
         self._search_box.textChanged.connect(self._apply_filters)
+        self._search_box.textChanged.connect(self._on_search_text_changed)
         self._priority_combo.currentTextChanged.connect(self._apply_filters)
         self._status_combo.currentTextChanged.connect(self._apply_filters)
         self._clear_filter_btn.clicked.connect(self._clear_filters)
@@ -229,6 +252,7 @@ class MainWindow(QMainWindow):
         # Menu
         self._act_add.triggered.connect(self._on_add_task)
         self._act_edit.triggered.connect(self._on_edit_current_task)
+        self._act_export.triggered.connect(self._on_export)
         self._act_exit.triggered.connect(self._quit_app)
         self._act_settings.triggered.connect(self._on_settings)
         self._act_today.triggered.connect(self._on_today_tasks)
@@ -245,6 +269,22 @@ class MainWindow(QMainWindow):
     def _on_timer_tick(self):
         self._db.check_and_reset_tasks()
         self._refresh_view()
+
+        # Feature #19: overdue notification — check for newly overdue tasks
+        try:
+            overdue_tasks = self._db.get_overdue_tasks()
+            current_overdue_ids = {t.id for t in overdue_tasks}
+            # Prune notified set: remove ids that are no longer overdue
+            self._notified_overdue_ids &= current_overdue_ids
+            new_overdue = [t for t in overdue_tasks if t.id not in self._notified_overdue_ids]
+            if new_overdue:
+                self._tray.show_notification(
+                    "任务到期提醒",
+                    f"您有 {len(new_overdue)} 个任务已超时"
+                )
+                self._notified_overdue_ids.update(t.id for t in new_overdue)
+        except Exception:
+            pass  # tray failure must not crash the timer
 
     def _on_tab_changed(self, index: int):
         task_type = TAB_TYPES[index]
@@ -275,6 +315,11 @@ class MainWindow(QMainWindow):
         self._model.refresh_data(self._current_filter)
         self._update_status_bar()
 
+    def _on_search_text_changed(self, text: str):
+        """Feature #21: update highlight in real time as the user types."""
+        self._model.set_search_text(text)
+        self._highlight_delegate.set_search_text(text)
+
     def _clear_filters(self):
         self._search_box.clear()
         self._priority_combo.setCurrentIndex(0)
@@ -293,7 +338,6 @@ class MainWindow(QMainWindow):
             if new_type != self._current_filter.task_type:
                 idx = TAB_TYPES.index(new_type)
                 self._tab_bar.setCurrentIndex(idx)
-                self._on_tab_changed(idx)
             else:
                 self._refresh_view()
 
@@ -314,15 +358,8 @@ class MainWindow(QMainWindow):
             if new_type != self._current_filter.task_type:
                 idx = TAB_TYPES.index(new_type)
                 self._tab_bar.setCurrentIndex(idx)
-                self._on_tab_changed(idx)
             else:
                 self._refresh_view()
-
-    def _on_toggle_complete(self):
-        rows = self._selected_rows()
-        for task in rows:
-            self._db.toggle_complete(task.id)
-        self._refresh_view()
 
     def _on_delete_task(self):
         rows = self._selected_rows()
@@ -332,15 +369,17 @@ class MainWindow(QMainWindow):
         title = rows[0].title if count == 1 else f"({count}个任务)"
         reply = QMessageBox(
             QMessageBox.Icon.Question, "确认删除",
-            f"确定要删除 {title} 吗？此操作不可恢复。",
+            f"确定要删除 {title} 吗？可按 Ctrl+Z 撤销最近删除。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self
         )
         reply.button(QMessageBox.StandardButton.Yes).setText("是")
         reply.button(QMessageBox.StandardButton.No).setText("否")
         if reply.exec() == QMessageBox.StandardButton.Yes:
             for task in rows:
-                self._db.delete_task(task.id)
+                self._db.soft_delete_task(task.id)
+            self._last_deleted_id = rows[-1].id  # last one is "most recent"
             self._refresh_view()
+            self.statusBar().showMessage("已删除任务 — 按 Ctrl+Z 撤销", 5000)
 
     def _show_context_menu(self, point: QPoint):
         index = self._table.indexAt(point)
@@ -367,14 +406,16 @@ class MainWindow(QMainWindow):
     def _on_delete_single(self, task):
         reply = QMessageBox(
             QMessageBox.Icon.Question, "确认删除",
-            f"确定要删除「{task.title}」吗？此操作不可恢复。",
+            f"确定要删除「{task.title}」吗？可按 Ctrl+Z 撤销。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self
         )
         reply.button(QMessageBox.StandardButton.Yes).setText("是")
         reply.button(QMessageBox.StandardButton.No).setText("否")
         if reply.exec() == QMessageBox.StandardButton.Yes:
-            self._db.delete_task(task.id)
+            self._db.soft_delete_task(task.id)
+            self._last_deleted_id = task.id
             self._refresh_view()
+            self.statusBar().showMessage("已删除任务 — 按 Ctrl+Z 撤销", 5000)
 
     def _on_delete_by_id(self, task_id: int):
         task = self._model.get_task_by_id(task_id)
@@ -382,14 +423,26 @@ class MainWindow(QMainWindow):
             return
         reply = QMessageBox(
             QMessageBox.Icon.Question, "确认删除",
-            f"确定要删除「{task.title}」吗？此操作不可恢复。",
+            f"确定要删除「{task.title}」吗？可按 Ctrl+Z 撤销。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self
         )
         reply.button(QMessageBox.StandardButton.Yes).setText("是")
         reply.button(QMessageBox.StandardButton.No).setText("否")
         if reply.exec() == QMessageBox.StandardButton.Yes:
-            self._db.delete_task(task_id)
+            self._db.soft_delete_task(task_id)
+            self._last_deleted_id = task_id
             self._refresh_view()
+            self.statusBar().showMessage("已删除任务 — 按 Ctrl+Z 撤销", 5000)
+
+    def _on_undo_delete(self):
+        """Feature #20: restore the most recently soft-deleted task."""
+        if self._last_deleted_id is None:
+            self.statusBar().showMessage("无可撤销的操作", 2000)
+            return
+        self._db.restore_task(self._last_deleted_id)
+        self._last_deleted_id = None
+        self._refresh_view()
+        self.statusBar().clearMessage()
 
     def _on_settings(self):
         dlg = SettingsDialog(self, self._db)
@@ -415,6 +468,32 @@ class MainWindow(QMainWindow):
         dlg = TodayTaskDialog(tasks, "全部任务", self)
         dlg.exec()
 
+    def _on_export(self):
+        """Feature #15: export all tasks to JSON or CSV."""
+        tasks = self._db.get_all_tasks_for_export()
+        if not tasks:
+            QMessageBox.information(self, "导出", "没有可导出的任务")
+            return
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出任务",
+            "",
+            "JSON文件 (*.json);;CSV文件 (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            if path.endswith(".csv"):
+                export_util.export_to_csv(tasks, path)
+            else:
+                export_util.export_to_json(tasks, path)
+            QMessageBox.information(
+                self, "导出成功",
+                f"已导出 {len(tasks)} 个任务到\n{path}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
     def _selected_rows(self) -> list:
         rows = []
         for index in self._table.selectionModel().selectedRows():
@@ -428,9 +507,9 @@ class MainWindow(QMainWindow):
         self._update_status_bar()
 
     def _update_status_bar(self):
-        total, pending, completed = self._model.task_count()
+        counts = self._db.get_task_counts()
         self._status_label.setText(
-            f"共 {total} 个任务 | {pending} 待完成 | {completed} 已完成"
+            f"今日到期:{counts['today_due']} | 超时:{counts['overdue']} | 未完成:{counts['incomplete']}"
         )
 
     def _load_settings(self):

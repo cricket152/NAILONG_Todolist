@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex
 from PyQt6.QtGui import QColor
 
-from ..models import Task, FilterParams
+from ..models import Task, FilterParams, PRIORITY_LABELS, PRIORITY_ORDER, PRIORITY_COLORS
 from ..database import DatabaseManager
 
 COLUMNS_DDL = ["标题", "优先级", "截止日期", "状态", "完成", "删除"]
@@ -15,7 +13,6 @@ ACTION_COL_SIMPLE = 3
 CHECK_COL_DDL = 4
 CHECK_COL_SIMPLE = 2
 
-PRIORITY_MAP = {"high": "高", "medium": "中", "low": "低"}
 STATUS_MAP = {"pending": "待完成", "completed": "已完成"}
 OVERDUE_COLOR = QColor("#C0392B")
 
@@ -29,6 +26,7 @@ class TaskTableModel(QAbstractTableModel):
         self._sort_column = -1
         self._sort_order = Qt.SortOrder.AscendingOrder
         self._task_type = "ddl"
+        self._search_text = ""
 
     @property
     def columns(self) -> list[str]:
@@ -37,22 +35,21 @@ class TaskTableModel(QAbstractTableModel):
     def set_task_type(self, task_type: str):
         self._task_type = task_type
 
+    def set_search_text(self, text: str) -> None:
+        self._search_text = (text or "").lower()
+        if self.rowCount() > 0 and self.columnCount() > 0:
+            top_left = self.index(0, 0)
+            bottom_right = self.index(self.rowCount() - 1, self.columnCount() - 1)
+            self.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole])
+
+    def search_text(self) -> str:
+        return self._search_text
+
     def rowCount(self, parent=QModelIndex()):
         return len(self._tasks)
 
     def columnCount(self, parent=QModelIndex()):
         return len(self.columns)
-
-    def _is_overdue(self, task: Task) -> bool:
-        if self._task_type != "ddl":
-            return False
-        if not task.due_date or task.status != "pending":
-            return False
-        try:
-            due_dt = datetime.strptime(task.due_date, "%Y-%m-%d %H:%M")
-            return due_dt < datetime.now()
-        except ValueError:
-            return task.due_date < datetime.now().strftime("%Y-%m-%d %H:%M")
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
@@ -69,20 +66,19 @@ class TaskTableModel(QAbstractTableModel):
             if col == 0:
                 return task.title
             elif col == 1:
-                return PRIORITY_MAP.get(task.priority, task.priority)
+                return PRIORITY_LABELS.get(task.priority, task.priority)
             elif col == 2 and is_ddl:
                 return task.due_date or ""
             elif col == 3 and is_ddl:
-                if self._is_overdue(task):
+                if task.is_overdue:
                     return "已超时"
                 return STATUS_MAP.get(task.status, task.status)
 
         if role == Qt.ItemDataRole.ForegroundRole:
             if col == 1:
-                return {"high": QColor("#C0392B"), "medium": QColor("#E67E22"),
-                        "low": QColor("#A1887F")}.get(task.priority, QColor("#3E2723"))
+                return QColor(PRIORITY_COLORS.get(task.priority, "#3E2723"))
             if col == 3 and is_ddl:
-                if self._is_overdue(task):
+                if task.is_overdue:
                     return OVERDUE_COLOR
                 return QColor("#6B8E6B") if task.status == "completed" else QColor("#6D4C41")
 
@@ -118,20 +114,15 @@ class TaskTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.CheckStateRole and index.column() == check_col:
             task = self._tasks[index.row()]
             new_status = "completed" if value == Qt.CheckState.Checked else "pending"
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if new_status == "completed":
-                self._db._conn.execute(
-                    "UPDATE tasks SET status='completed', completed_at=? WHERE id=?",
-                    (now, task.id)
-                )
+            self._db.toggle_complete(task.id)
+            # Re-read to get accurate completed_at from the DB
+            updated = self._db.get_task_by_id(task.id)
+            if updated is not None:
+                task.status = updated.status
+                task.completed_at = updated.completed_at
             else:
-                self._db._conn.execute(
-                    "UPDATE tasks SET status='pending', completed_at=NULL WHERE id=?",
-                    (task.id,)
-                )
-            self._db._conn.commit()
-            task.status = new_status
-            task.completed_at = now if new_status == "completed" else None
+                task.status = new_status
+                task.completed_at = None if new_status != "completed" else task.completed_at
             self.dataChanged.emit(index, index, [role])
             # Also emit dataChanged for status column (col 3 in DDL) to update display
             if is_ddl:
@@ -160,7 +151,7 @@ class TaskTableModel(QAbstractTableModel):
         if self._task_type == "ddl":
             key_map = {
                 0: lambda t: t.title.lower(),
-                1: lambda t: {"high": 0, "medium": 1, "low": 2}[t.priority],
+                1: lambda t: PRIORITY_ORDER[t.priority],
                 2: lambda t: t.due_date or "9999",
                 3: lambda t: t.status,
                 4: lambda t: t.status,   # checkbox column sorts by status
@@ -168,7 +159,7 @@ class TaskTableModel(QAbstractTableModel):
         else:
             key_map = {
                 0: lambda t: t.title.lower(),
-                1: lambda t: {"high": 0, "medium": 1, "low": 2}[t.priority],
+                1: lambda t: PRIORITY_ORDER[t.priority],
                 2: lambda t: t.status,   # checkbox column sorts by status
             }
         key = key_map.get(self._sort_column, lambda t: t.created_at)

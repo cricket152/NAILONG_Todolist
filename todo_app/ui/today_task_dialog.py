@@ -5,10 +5,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 
-from datetime import datetime
+from ..models import PRIORITY_LABELS
 
 TYPE_LABELS = {"ddl": "DDL任务", "daily": "每日任务", "weekly": "每周任务"}
-PRIORITY_LABELS = {"high": "高", "medium": "中", "low": "低"}
 
 
 class TodayTaskDialog(QDialog):
@@ -106,14 +105,8 @@ class TodayTaskDialog(QDialog):
             due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 3, due_item)
 
-            # Status — check overdue (use datetime objects for second-level precision)
-            is_overdue = False
-            if task.task_type == "ddl" and task.due_date and task.status == "pending":
-                try:
-                    due_dt = datetime.strptime(task.due_date, "%Y-%m-%d %H:%M")
-                    is_overdue = due_dt < datetime.now()
-                except ValueError:
-                    is_overdue = task.due_date < datetime.now().strftime("%Y-%m-%d %H:%M")
+            # Status — check overdue
+            is_overdue = task.is_overdue
 
             if task.status == "completed":
                 status_text = "✅ 已完成"

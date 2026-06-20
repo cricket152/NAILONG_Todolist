@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QStyledItemDelegate, QStyle
 from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont
+from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPainterPath
 
 
 class CheckBoxDelegate(QStyledItemDelegate):
@@ -33,7 +33,6 @@ class CheckBoxDelegate(QStyledItemDelegate):
             painter.setPen(QPen(QColor("#8D6E63"), 2.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             # Draw ✓ using a simple polyline
-            from PyQt6.QtGui import QPainterPath
             path = QPainterPath()
             # 起点：原为 x+3, 现改为 x+5
             path.moveTo(x + 5, y + size * 0.5)

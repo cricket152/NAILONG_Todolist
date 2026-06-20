@@ -39,7 +39,7 @@ def set_autostart(enable: bool) -> bool:
             if getattr(sys, 'frozen', False):
                 exe_path = sys.executable
             else:
-                exe_path = sys.executable
+                exe_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
             winreg.SetValueEx(key, "TodoList", 0, winreg.REG_SZ, exe_path)
         else:
             try:

@@ -45,12 +45,41 @@ class DatabaseManager:
             INSERT OR IGNORE INTO settings (key, value) VALUES ('minimize_to_tray', '1');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('window_geometry', '');
         """)
-        # Migration: add task_type column if upgrading from old schema
+        # Schema-version based incremental migration
+        current_version_str = self.get_setting("schema_version", "0")
         try:
-            self._conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'ddl'")
-            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type)")
-        except:
-            pass
+            current_version = int(current_version_str)
+        except ValueError:
+            current_version = 0
+
+        if current_version < 1:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'ddl'"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type)"
+                )
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+                # Column already exists (e.g. brand-new DB created with task_type)
+            self.set_setting("schema_version", "1")
+
+        if current_version < 2:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN deleted_at TEXT"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_deleted_at ON tasks(deleted_at)"
+                )
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+                # Column already exists (e.g. brand-new DB created with deleted_at)
+            self.set_setting("schema_version", "2")
+
         self._conn.commit()
 
     def add_task(self, task: Task) -> int:
@@ -91,11 +120,26 @@ class DatabaseManager:
             )
         self._conn.commit()
 
+    def soft_delete_task(self, task_id: int):
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self._conn.execute(
+            "UPDATE tasks SET deleted_at=? WHERE id=?",
+            (now, task_id)
+        )
+        self._conn.commit()
+
+    def restore_task(self, task_id: int):
+        self._conn.execute(
+            "UPDATE tasks SET deleted_at=NULL WHERE id=?",
+            (task_id,)
+        )
+        self._conn.commit()
+
     def get_all_tasks(self, filter_params: FilterParams = None) -> list[Task]:
         if filter_params is None:
             filter_params = FilterParams()
 
-        sql = "SELECT * FROM tasks WHERE 1=1"
+        sql = "SELECT * FROM tasks WHERE deleted_at IS NULL"
         params = []
 
         if filter_params.task_type:
@@ -137,6 +181,7 @@ class DatabaseManager:
         sql = """
             SELECT * FROM tasks WHERE status = 'pending'
             AND task_type IN ('ddl', 'daily', 'weekly')
+            AND deleted_at IS NULL
         """
         cursor = self._conn.execute(sql)
         rows = cursor.fetchall()
@@ -145,16 +190,83 @@ class DatabaseManager:
     def get_all_tasks_combined(self) -> list[Task]:
         """Return all tasks (any status): DDL, daily, and weekly,
         sorted by type priority then priority level."""
-        sql = "SELECT * FROM tasks WHERE task_type IN ('ddl', 'daily', 'weekly')"
+        sql = "SELECT * FROM tasks WHERE task_type IN ('ddl', 'daily', 'weekly') AND deleted_at IS NULL"
         cursor = self._conn.execute(sql)
         rows = cursor.fetchall()
         return self._sort_tasks_by_type_priority([Task.from_row(row) for row in rows])
 
-    def check_and_reset_tasks(self):
-        """Reset daily tasks at midnight and weekly tasks on Sunday midnight."""
+    def get_overdue_tasks(self) -> list[Task]:
+        """Return tasks where status != 'completed', not deleted,
+        due_date is set, and due_date is in the past. Ordered by due_date ASC."""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        sql = """
+            SELECT * FROM tasks
+            WHERE status != 'completed'
+            AND deleted_at IS NULL
+            AND due_date IS NOT NULL
+            AND due_date != ''
+            AND due_date < ?
+            ORDER BY due_date ASC
+        """
+        cursor = self._conn.execute(sql, (now_str,))
+        return [Task.from_row(row) for row in cursor.fetchall()]
+
+    def get_task_counts(self) -> dict:
+        """Return counts for status bar: today_due, overdue, incomplete."""
         now = datetime.now()
         today_str = now.strftime("%Y-%m-%d")
-        weekday = now.weekday()  # Monday=0, Sunday=6
+
+        # today_due: DDL tasks due today (due_date date part == today),
+        # not completed, not deleted
+        cursor = self._conn.execute(
+            """SELECT COUNT(*) FROM tasks
+               WHERE task_type = 'ddl'
+               AND status != 'completed'
+               AND deleted_at IS NULL
+               AND due_date IS NOT NULL
+               AND due_date != ''
+               AND due_date >= ?
+               AND due_date < ?""",
+            (today_str + " 00:00", today_str + " 24:00")
+        )
+        today_due = cursor.fetchone()[0]
+
+        # overdue: same definition as get_overdue_tasks
+        cursor = self._conn.execute(
+            """SELECT COUNT(*) FROM tasks
+               WHERE status != 'completed'
+               AND deleted_at IS NULL
+               AND due_date IS NOT NULL
+               AND due_date != ''
+               AND due_date < ?""",
+            (now.strftime("%Y-%m-%d %H:%M"),)
+        )
+        overdue = cursor.fetchone()[0]
+
+        # incomplete: all tasks not completed and not deleted
+        cursor = self._conn.execute(
+            """SELECT COUNT(*) FROM tasks
+               WHERE status != 'completed'
+               AND deleted_at IS NULL"""
+        )
+        incomplete = cursor.fetchone()[0]
+
+        return {
+            "today_due": today_due,
+            "overdue": overdue,
+            "incomplete": incomplete,
+        }
+
+    def get_all_tasks_for_export(self) -> list[Task]:
+        """Return ALL tasks including soft-deleted, ordered by created_at DESC."""
+        sql = "SELECT * FROM tasks ORDER BY created_at DESC"
+        cursor = self._conn.execute(sql)
+        return [Task.from_row(row) for row in cursor.fetchall()]
+
+    def check_and_reset_tasks(self):
+        """Reset daily tasks on date change and weekly tasks on ISO week change."""
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
 
         # Daily reset: reset if last reset date != today
         last_daily = self.get_setting("last_daily_reset", "")
@@ -165,11 +277,11 @@ class DatabaseManager:
             )
             self.set_setting("last_daily_reset", today_str)
 
-        # Weekly reset: reset on Sunday if last reset week != current week
+        # Weekly reset: reset when ISO week changes (day-agnostic)
         iso_year, iso_week, _ = now.isocalendar()
         current_week_key = f"{iso_year}-W{iso_week}"
         last_weekly = self.get_setting("last_weekly_reset", "")
-        if weekday == 6 and last_weekly != current_week_key:
+        if last_weekly != current_week_key:
             self._conn.execute(
                 "UPDATE tasks SET status='pending', completed_at=NULL "
                 "WHERE task_type='weekly' AND status='completed'"
