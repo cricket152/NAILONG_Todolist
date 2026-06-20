@@ -3,14 +3,14 @@
 一个带一点奶龙快乐气息的 PyQt6 桌面待办工具。它适合用来管理课程作业、DDL、每日习惯和每周计划：打开就能记，做完就勾，超时会提醒，删错还能撤销。
 
 <p align="center">
-  <img src="https://www.nailoong.com/img/wholeFamily.png" alt="奶龙家族" width="520">
+  <img src="resources/app_icon2.png" alt="NAILONG TodoList 图标" width="180">
 </p>
 
 <p align="center">
   <b>把 DDL 变成一只可以被驯服的小黄龙。</b>
 </p>
 
-> 图片来源：奶龙官方网站公开资源，仅在 README 中以外链形式展示。
+> 图片使用项目内置图标资源：`resources/app_icon2.png`。
 
 ## 为什么做它
 
