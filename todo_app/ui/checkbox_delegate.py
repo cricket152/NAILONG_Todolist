@@ -7,6 +7,10 @@ class CheckBoxDelegate(QStyledItemDelegate):
     """Delegate that renders a centered checkbox in a table cell."""
 
     def paint(self, painter: QPainter, option, index):
+        if hasattr(index.model(), "get_task") and index.model().get_task(index.row()) is None:
+            super().paint(painter, option, index)
+            return
+
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -45,6 +49,8 @@ class CheckBoxDelegate(QStyledItemDelegate):
         painter.restore()
 
     def editorEvent(self, event, model, option, index):
+        if model.get_task(index.row()) is None:
+            return False
         if event.type() == event.Type.MouseButtonRelease:
             current = index.data(Qt.ItemDataRole.CheckStateRole)
             new_val = Qt.CheckState.Unchecked if current == Qt.CheckState.Checked else Qt.CheckState.Checked

@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QHBoxLayout,
     QLineEdit, QPlainTextEdit, QComboBox, QCheckBox,
     QDateEdit, QTimeEdit, QRadioButton, QButtonGroup, QGroupBox,
-    QDialogButtonBox, QMessageBox, QWidget, QLabel
+    QDialogButtonBox, QMessageBox, QWidget, QLabel, QPushButton
 )
 from PyQt6.QtCore import QDate, QTime, QDateTime
 
@@ -10,9 +10,11 @@ from ..models import Task, PRIORITY_LABELS, PRIORITY_LABELS_REVERSE
 
 
 class TaskDialog(QDialog):
-    def __init__(self, parent=None, task: Task = None):
+    def __init__(self, parent=None, task: Task = None, default_task_type: str = "ddl"):
         super().__init__(parent)
         self._edit_mode = task is not None
+        self._original_task = task
+        self._default_task_type = default_task_type if default_task_type in {"ddl", "daily", "weekly"} else "ddl"
         self.result_task: Task | None = None
 
         self.setWindowTitle("编辑任务" if self._edit_mode else "添加任务")
@@ -78,6 +80,16 @@ class TaskDialog(QDialog):
         due_layout.addWidget(self._due_check)
         due_layout.addWidget(self._due_date_edit)
         due_layout.addWidget(self._due_time_edit)
+
+        self._today_btn = QPushButton("今天")
+        self._tomorrow_btn = QPushButton("明天")
+        self._next_week_btn = QPushButton("下周")
+        self._today_btn.setFixedWidth(54)
+        self._tomorrow_btn.setFixedWidth(54)
+        self._next_week_btn.setFixedWidth(54)
+        due_layout.addWidget(self._today_btn)
+        due_layout.addWidget(self._tomorrow_btn)
+        due_layout.addWidget(self._next_week_btn)
         due_layout.addStretch()
         form.addRow(due_label, due_layout)
         self._due_label = due_label
@@ -85,6 +97,9 @@ class TaskDialog(QDialog):
 
         self._due_check.toggled.connect(self._due_date_edit.setEnabled)
         self._due_check.toggled.connect(self._due_time_edit.setEnabled)
+        self._today_btn.clicked.connect(lambda: self._set_due_date(QDate.currentDate()))
+        self._tomorrow_btn.clicked.connect(lambda: self._set_due_date(QDate.currentDate().addDays(1)))
+        self._next_week_btn.clicked.connect(lambda: self._set_due_date(QDate.currentDate().addDays(7)))
 
         layout.addLayout(form)
 
@@ -101,8 +116,18 @@ class TaskDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        # Default: DDL selected
-        self._radio_ddl.setChecked(True)
+        if self._default_task_type == "daily":
+            self._radio_daily.setChecked(True)
+        elif self._default_task_type == "weekly":
+            self._radio_weekly.setChecked(True)
+        else:
+            self._radio_ddl.setChecked(True)
+        self._title_edit.setFocus()
+
+    def _set_due_date(self, date: QDate):
+        self._due_check.setChecked(True)
+        self._due_date_edit.setDate(date)
+        self._due_time_edit.setTime(QTime(23, 59))
 
     def _on_type_changed(self):
         is_ddl = self._radio_ddl.isChecked()
@@ -168,7 +193,8 @@ class TaskDialog(QDialog):
             description=description,
             priority=priority,
             due_date=due_date,
-            status="pending",
+            status=self._original_task.status if self._original_task else "pending",
+            completed_at=self._original_task.completed_at if self._original_task else None,
             task_type=task_type
         )
         self.accept()

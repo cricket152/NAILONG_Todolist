@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QHeaderView, QMenuBar, QMenu,
     QStatusBar, QLabel, QLineEdit, QComboBox, QPushButton,
-    QTabBar, QMessageBox, QFileDialog
+    QTabBar, QMessageBox, QFileDialog, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QByteArray, QPoint, QTimer
 from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence
@@ -57,6 +57,8 @@ class MainWindow(QMainWindow):
         # Feature #20: Ctrl+Z undo-delete shortcut (must be after status bar init)
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
         self._undo_shortcut.activated.connect(self._on_undo_delete)
+        self._delete_shortcut = QShortcut(QKeySequence("Delete"), self)
+        self._delete_shortcut.activated.connect(self._on_delete_task)
 
     def _init_model(self):
         self._model = TaskTableModel(self._db, self)
@@ -117,6 +119,15 @@ class MainWindow(QMainWindow):
         self._clear_filter_btn.setFixedWidth(60)
         filter_layout.addWidget(self._clear_filter_btn)
 
+        self._add_btn = QPushButton("新增")
+        self._add_btn.setFixedWidth(72)
+        filter_layout.addWidget(self._add_btn)
+
+        self._delete_selected_btn = QPushButton("删除选中")
+        self._delete_selected_btn.setFixedWidth(88)
+        self._delete_selected_btn.setEnabled(False)
+        filter_layout.addWidget(self._delete_selected_btn)
+
         filter_layout.addStretch()
         layout.addWidget(filter_widget)
 
@@ -125,8 +136,9 @@ class MainWindow(QMainWindow):
         self._table.setModel(self._model)
         self._table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
-        self._table.setSortingEnabled(False)
+        self._table.setSortingEnabled(True)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         v_header = self._table.verticalHeader()
@@ -243,11 +255,14 @@ class MainWindow(QMainWindow):
         self._priority_combo.currentTextChanged.connect(self._apply_filters)
         self._status_combo.currentTextChanged.connect(self._apply_filters)
         self._clear_filter_btn.clicked.connect(self._clear_filters)
+        self._add_btn.clicked.connect(self._on_add_task)
+        self._delete_selected_btn.clicked.connect(self._on_delete_task)
 
         # Table
         self._table.doubleClicked.connect(self._on_edit_current_task)
         self._table.customContextMenuRequested.connect(self._show_context_menu)
         self._table.horizontalHeader().sortIndicatorChanged.connect(self._on_sort_changed)
+        self._table.selectionModel().selectionChanged.connect(self._update_selection_actions)
 
         # Menu
         self._act_add.triggered.connect(self._on_add_task)
@@ -329,7 +344,7 @@ class MainWindow(QMainWindow):
         self._model.sort(column, order)
 
     def _on_add_task(self):
-        dlg = TaskDialog(self)
+        dlg = TaskDialog(self, default_task_type=self._current_filter.task_type)
         if dlg.exec() == TaskDialog.DialogCode.Accepted and dlg.result_task:
             # If adding from a different tab, task_type from dialog overrides
             self._db.add_task(dlg.result_task)
@@ -379,6 +394,7 @@ class MainWindow(QMainWindow):
                 self._db.soft_delete_task(task.id)
             self._last_deleted_id = rows[-1].id  # last one is "most recent"
             self._refresh_view()
+            self._table.clearSelection()
             self.statusBar().showMessage("已删除任务 — 按 Ctrl+Z 撤销", 5000)
 
     def _show_context_menu(self, point: QPoint):
@@ -415,6 +431,7 @@ class MainWindow(QMainWindow):
             self._db.soft_delete_task(task.id)
             self._last_deleted_id = task.id
             self._refresh_view()
+            self._table.clearSelection()
             self.statusBar().showMessage("已删除任务 — 按 Ctrl+Z 撤销", 5000)
 
     def _on_delete_by_id(self, task_id: int):
@@ -432,6 +449,7 @@ class MainWindow(QMainWindow):
             self._db.soft_delete_task(task_id)
             self._last_deleted_id = task_id
             self._refresh_view()
+            self._table.clearSelection()
             self.statusBar().showMessage("已删除任务 — 按 Ctrl+Z 撤销", 5000)
 
     def _on_undo_delete(self):
@@ -483,7 +501,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            if path.endswith(".csv"):
+            if selected_filter.startswith("CSV") and not path.lower().endswith(".csv"):
+                path += ".csv"
+            elif selected_filter.startswith("JSON") and not path.lower().endswith(".json"):
+                path += ".json"
+
+            if path.lower().endswith(".csv"):
                 export_util.export_to_csv(tasks, path)
             else:
                 export_util.export_to_json(tasks, path)
@@ -502,14 +525,19 @@ class MainWindow(QMainWindow):
                 rows.append(task)
         return rows
 
+    def _update_selection_actions(self):
+        self._delete_selected_btn.setEnabled(bool(self._selected_rows()))
+
     def _refresh_view(self):
         self._model.refresh_data(self._current_filter)
         self._update_status_bar()
 
     def _update_status_bar(self):
         counts = self._db.get_task_counts()
+        total, pending, completed = self._model.task_count()
         self._status_label.setText(
-            f"今日到期:{counts['today_due']} | 超时:{counts['overdue']} | 未完成:{counts['incomplete']}"
+            f"当前:{total} 项（待完成:{pending} 已完成:{completed}） | "
+            f"今日到期:{counts['today_due']} | 超时:{counts['overdue']} | 全部未完成:{counts['incomplete']}"
         )
 
     def _load_settings(self):

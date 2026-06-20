@@ -10,6 +10,10 @@ class DeleteButtonDelegate(QStyledItemDelegate):
         super().__init__(parent)
 
     def paint(self, painter: QPainter, option, index):
+        if hasattr(index.model(), "get_task") and index.model().get_task(index.row()) is None:
+            super().paint(painter, option, index)
+            return
+
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -42,6 +46,8 @@ class DeleteButtonDelegate(QStyledItemDelegate):
         painter.restore()
 
     def editorEvent(self, event, model, option, index):
+        if model.get_task(index.row()) is None:
+            return False
         if event.type() == event.Type.MouseButtonRelease:
             rect = option.rect
             btn_w = 28

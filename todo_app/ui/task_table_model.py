@@ -46,13 +46,21 @@ class TaskTableModel(QAbstractTableModel):
         return self._search_text
 
     def rowCount(self, parent=QModelIndex()):
-        return len(self._tasks)
+        return max(1, len(self._tasks))
 
     def columnCount(self, parent=QModelIndex()):
         return len(self.columns)
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
+            return None
+        if not self._tasks:
+            if role == Qt.ItemDataRole.DisplayRole and index.column() == 0:
+                return "暂无任务，点击“新增”或按 Ctrl+N 添加第一项"
+            if role == Qt.ItemDataRole.ForegroundRole:
+                return QColor("#A1887F")
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                return Qt.AlignmentFlag.AlignCenter
             return None
         task = self._tasks[index.row()]
         col = index.column()
@@ -100,6 +108,8 @@ class TaskTableModel(QAbstractTableModel):
     def flags(self, index):
         if not index.isValid():
             return Qt.ItemFlag.NoItemFlags
+        if not self._tasks:
+            return Qt.ItemFlag.NoItemFlags
         is_ddl = self._task_type == "ddl"
         check_col = CHECK_COL_DDL if is_ddl else CHECK_COL_SIMPLE
         if index.column() == check_col:
@@ -108,6 +118,8 @@ class TaskTableModel(QAbstractTableModel):
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         if not index.isValid():
+            return False
+        if not self._tasks:
             return False
         is_ddl = self._task_type == "ddl"
         check_col = CHECK_COL_DDL if is_ddl else CHECK_COL_SIMPLE
